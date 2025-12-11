@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>Audio Visualizer</title>
+  <style>
+    body {
+      margin: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+      color: #fff;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .visualizer-wrapper {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+    }
+
+    /* 整个波形容器 */
+    .visualizer {
+      display: flex;
+      align-items: center;
+      /* 每根柱子之间间隔 6dp ≈ 6px */
+      gap: 6px;
+      padding: 8px 16px;
+      border-radius: 999px;
+      background: #000;
+    }
+
+    /* 单根柱子 */
+    .bar {
+      width: 4px;               /* 柱子宽度可以按需求改 */
+      border-radius: 999px;
+      background: #fff;
+      /* 高度会在 JS 里动态设置：12px ~ 58px */
+    }
+
+    button {
+      padding: 8px 16px;
+      border-radius: 999px;
+      border: none;
+      background: #444;
+      color: #fff;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #666;
+    }
+
+    .status {
+      font-size: 12px;
+      color: #aaa;
+    }
+  </style>
+</head>
+<body>
+  <div class="visualizer-wrapper">
+    <div id="visualizer" class="visualizer"></div>
+    <button id="toggleBtn">开始采集麦克风</button>
+    <div class="status" id="statusText">状态：未开始</div>
+  </div>
+
+  <script>
+    // ===== 参数配置 =====
+    const BAR_COUNT = 40;          // 柱子数量
+    const MIN_BAR_HEIGHT = 12;     // 最小高度 12dp
+    const MAX_BAR_HEIGHT = 58;     // 最大高度 58dp
+
+    const visualizerEl = document.getElementById("visualizer");
+    const toggleBtn = document.getElementById("toggleBtn");
+    const statusText = document.getElementById("statusText");
+
+    let audioContext = null;
+    let analyser = null;
+    let dataArray = null;
+    let animationId = null;
+    let micStream = null;
+
+    // 当前波形数据（长度固定 BAR_COUNT）
+    const bars = new Array(BAR_COUNT).fill(MIN_BAR_HEIGHT);
+
+    // 初始化 DOM 柱子
+    const barElements = [];
+    function initBars() {
+      visualizerEl.innerHTML = "";
+      barElements.length = 0;
+
+      for (let i = 0; i < BAR_COUNT; i++) {
+        const bar = document.createElement("div");
+        bar.className = "bar";
+        bar.style.height = MIN_BAR_HEIGHT + "px";
+        barElements.push(bar);
+        visualizerEl.appendChild(bar);
+      }
+    }
+
+    initBars();
+
+    // 将 0~1 的音量映射到 12~58 像素
+    function mapVolumeToHeight(volume) {
+      const clamped = Math.max(0, Math.min(volume, 1));
+      return MIN_BAR_HEIGHT + clamped * (MAX_BAR_HEIGHT - MIN_BAR_HEIGHT);
+    }
+
+    // 计算当前音量（简化版：从时域数据里算一个归一化的平均值）
+    function getCurrentVolume() {
+      if (!analyser || !dataArray) return 0;
+
+      analyser.getByteTimeDomainData(dataArray);
+      let sum = 0;
+      for (let i = 0; i < dataArray.length; i++) {
+        const v = (dataArray[i] - 128) / 128; // 映射到 -1 ~ 1
+        sum += v * v;
+      }
+      const rms = Math.sqrt(sum / dataArray.length); // 0 ~ 1
+      return rms;
+    }
+
+    // 动画循环：更新波形
+    function renderLoop() {
+      const volume = getCurrentVolume();        // 0 ~ 1
+      const height = mapVolumeToHeight(volume);
+
+      // 效果：整体向左移动，新的高度从右边进来
+      bars.shift();
+      bars.push(height);
+
+      // 更新 DOM
+      for (let i = 0; i < BAR_COUNT; i++) {
+        barElements[i].style.height = bars[i].toFixed(2) + "px";
+      }
+
+      animationId = requestAnimationFrame(renderLoop);
+    }
+
+    async function start() {
+      if (audioContext) {
+        return;
+      }
+
+      try {
+        statusText.textContent = "状态：请求麦克风权限...";
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioContext.createMediaStreamSource(micStream);
+
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 1024;
+        const bufferLength = analyser.fftSize;
+        dataArray = new Uint8Array(bufferLength);
+
+        source.connect(analyser);
+
+        statusText.textContent = "状态：采集中...";
+        toggleBtn.textContent = "停止采集";
+        renderLoop();
+      } catch (err) {
+        console.error(err);
+        statusText.textContent = "状态：无法访问麦克风（请检查浏览器权限）";
+      }
+    }
+
+    function stop() {
+      if (animationId) {
+        cancelAnimationFrame(animationId);
+        animationId = null;
+      }
+      if (audioContext) {
+        audioContext.close();
+        audioContext = null;
+      }
+      if (micStream) {
+        micStream.getTracks().forEach(t => t.stop());
+        micStream = null;
+      }
+      statusText.textContent = "状态：已停止";
+      toggleBtn.textContent = "开始采集麦克风";
+    }
+
+    toggleBtn.addEventListener("click", () => {
+      if (audioContext) {
+        stop();
+      } else {
+        start();
+      }
+    });
+  </script>
+</body>
+</html>
